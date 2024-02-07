@@ -20,4 +20,4 @@ jobs:
           cache: true
       - uses: bluefireteam/flutter-gh-pages@v7
         with:
-          baseHref: /ugiro/
+          baseHref: /flutter_ugiro/
