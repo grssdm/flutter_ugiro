@@ -1,15 +1,20 @@
 import 'dart:html';
 
+import 'package:excel/excel.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_ugiro/my_button.dart';
 import 'package:flutter_ugiro/my_text_field.dart';
-import 'package:flutter_ugiro/person_details.dart';
 import 'package:intl/intl.dart';
+import 'package:package_info_plus/package_info_plus.dart';
+
+import 'models/account.dart';
 
 class HomePage extends StatefulWidget {
-  const HomePage({super.key});
+  final PackageInfo packageInfo;
+
+  const HomePage(this.packageInfo, {super.key});
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -20,20 +25,22 @@ class _HomePageState extends State<HomePage> {
 
   final TextEditingController _taxNumberController = TextEditingController();
   final TextEditingController _bankAccountController = TextEditingController();
+  final TextEditingController _titleController = TextEditingController();
   final TextEditingController _associationController = TextEditingController();
   final TextEditingController _commentController = TextEditingController();
   final TextEditingController _delayController = TextEditingController();
 
   final ValueNotifier<DateTime> _debitDate = ValueNotifier(DateTime.now());
-  final ValueNotifier<PlatformFile?> _selectedFile = ValueNotifier(null);
+  final ValueNotifier<Excel?> _excelFile = ValueNotifier(null);
   final ValueNotifier<bool> _isProcessAllowed = ValueNotifier(false);
 
   void _isProcessAllowedListener() {
     if (_taxNumberController.text.isEmpty ||
         _bankAccountController.text.isEmpty ||
+        _titleController.text.isEmpty ||
         _associationController.text.isEmpty ||
         _commentController.text.isEmpty ||
-        _selectedFile.value == null) {
+        _excelFile.value == null) {
       _isProcessAllowed.value = false;
     } else {
       _isProcessAllowed.value = true;
@@ -48,101 +55,176 @@ class _HomePageState extends State<HomePage> {
 
     _taxNumberController.addListener(_isProcessAllowedListener);
     _bankAccountController.addListener(_isProcessAllowedListener);
+    _titleController.addListener(_isProcessAllowedListener);
     _associationController.addListener(_isProcessAllowedListener);
     _commentController.addListener(_isProcessAllowedListener);
 
-    _selectedFile.addListener(_isProcessAllowedListener);
+    _excelFile.addListener(_isProcessAllowedListener);
   }
 
   Future<void> _openFilePicker() async {
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
-      allowedExtensions: ['csv'],
+      allowedExtensions: [
+        'xlsx',
+        'xls',
+      ],
     );
 
     if (result != null) {
-      _selectedFile.value = result.files.first;
+      _excelFile.value = Excel.decodeBytes(result.files.first.bytes!);
     }
   }
 
-  void _process() {
-    final csvContent =
-        String.fromCharCodes(_selectedFile.value!.bytes!).split('\n');
+  List<Account> _checkFileData(Excel excel) {
+    List<Account> accounts = [];
+    for (var (i, row) in excel.tables.values.first.rows.indexed) {
+      if (i == 0) continue;
+      var data = row.map((cell) => cell!.value.toString()).toList();
+      var account = Account.fromRow(data);
 
-    final List<PersonDetails> people = [];
-
-    for (final (i, line) in csvContent.indexed) {
-      if (i == csvContent.length - 1) {
-        break;
+      if (account.id.length > 24) {
+        throw Exception("[${i + 1}. sor] 24 karakternél hosszabb a tagszám!");
+      }
+      if (account.name.length > 35) {
+        throw Exception(
+            "[${i + 1}. sor] 35 karakternél hosszabb az ügyfél neve!");
+      }
+      if (account.accountHolderName.length > 35) {
+        throw Exception(
+            "[${i + 1}. sor] 35 karakternél hosszabb a számlatulajdonos neve!");
+      }
+      if (account.accountNumber.length > 24) {
+        throw Exception(
+            "[${i + 1}. sor] 24 karakternél hosszabb a bankszámlaszám!");
+      }
+      if (account.id.length > 35) {
+        throw Exception("[${i + 1}. sor] 35 karakternél hosszabb a cím!");
+      }
+      if (account.fee.length > 10) {
+        throw Exception("[${i + 1}. sor] 10 karakternél hosszabb a díj!");
       }
 
-      List<String> lineComponents = line.split(';');
-
-      people.add(
-        PersonDetails(
-          lineComponents[0].trim(),
-          lineComponents[1].trim(),
-          lineComponents[2].trim(),
-          lineComponents[3].trim().split('-').join(''),
-          lineComponents[4].trim(),
-          lineComponents[5].trim(),
-          lineComponents[6].trim(),
-          lineComponents[7].trim(),
-        ),
-      );
+      accounts.add(account);
     }
 
+    return accounts;
+  }
+
+  void _buildGiroFile(
+    String headRecordType,
+    String messageType,
+    String duplumCode,
+    String taxNumber,
+    String compilationDate,
+    String number,
+    String accountNumber,
+    String notificationDateLine,
+    String title,
+    String organization,
+    String headComment,
+    String itemRecordType,
+    String itemComment,
+    List<Account> accounts,
+    String footerRecordType,
+  ) {
     List<String> outputLines = [];
-    String line = ('01' +
-                'BESZED' +
-                '0' +
-                _taxNumberController.text.padRight(13, ' ') +
-                DateFormat('yyyyMMdd').format(
-                  _debitDate.value.subtract(
-                    Duration(days: int.parse(_delayController.text)),
-                  ),
-                ) +
-                '0001' +
-                _bankAccountController.text.padRight(24, ' ') +
-                DateFormat('yyyyMMdd').format(_debitDate.value) +
-                _associationController.text)
-            .padRight(174, ' ') +
+    String head = headRecordType +
+        messageType +
+        duplumCode +
+        taxNumber.padRight(13) +
+        compilationDate +
+        number.padLeft(4, "0") +
+        accountNumber.padRight(24) +
+        notificationDateLine +
+        title.padRight(3) +
+        organization.padRight(35) +
+        headComment.padRight(70) +
         '\n';
 
-    outputLines.add(line);
+    outputLines.add(head);
 
     int sum = 0;
 
-    for (int i = 0; i < people.length; i++) {
-      line = ('02' +
-                  (i + 1).toString().padLeft(6, '0') +
-                  DateFormat('yyyyMMdd').format(_debitDate.value) +
-                  people[i].fee.padLeft(10, '0') +
-                  people[i].accountNumber.padRight(24, ' ') +
-                  people[i].membershipNumber.padRight(24, ' ') +
-                  people[i].name.padRight(35, ' ') +
-                  people[i].fullAddress.padRight(35, ' ') +
-                  people[i].name.padRight(35, ' ') +
-                  _commentController.text.padRight(70, ' '))
-              .padRight(249, ' ') +
-          '\n';
-      outputLines.add(line);
-      sum += int.parse(people[i].fee);
+    for (var (i, account) in accounts.indexed) {
+      outputLines.add(
+        itemRecordType +
+            (i + 1).toString().padLeft(6, '0') +
+            notificationDateLine +
+            account.fee +
+            account.accountNumber +
+            account.id +
+            account.name +
+            account.address +
+            account.accountHolderName +
+            itemComment.padRight(70) +
+            '\n',
+      );
+      sum += int.parse(account.fee);
     }
 
-    line = '03' +
-        people.length.toString().padLeft(6, '0') +
-        sum.toString().padLeft(16, '0');
-    outputLines.add(line);
-    outputLines.add('\n');
+    String footer = footerRecordType +
+        accounts.length.toString().padLeft(6, '0') +
+        sum.toString().padLeft(16, '0') +
+        '\n';
+
+    outputLines.add(footer);
 
     // Create a Blob with the file contents
     final blob = Blob(outputLines, 'text/plain');
 
     // Create an anchor element with a download attribute to trigger the download
     final anchor = AnchorElement(href: Url.createObjectUrlFromBlob(blob))
-      ..setAttribute(
-          "download", "${_selectedFile.value!.name.split('.').first}.txt")
+      ..setAttribute("download", "ugiro-file.cbe")
+      ..click();
+
+    // Clean up the URL created for the blob
+    Url.revokeObjectUrl(anchor.href!);
+  }
+
+  void _process() {
+    try {
+      List<Account> accounts = _checkFileData(_excelFile.value!);
+
+      _buildGiroFile(
+        '01',
+        'BESZED',
+        '0',
+        _taxNumberController.text,
+        DateFormat('yyyyMMdd')
+            .format(_debitDate.value.subtract(const Duration(days: 1))),
+        '1',
+        _bankAccountController.text,
+        DateFormat('yyyyMMdd').format(_debitDate.value),
+        _titleController.text,
+        _associationController.text,
+        '',
+        '02',
+        _commentController.text,
+        accounts,
+        '03',
+      );
+    } catch (e) {
+      showDialog(
+        context: context,
+        builder: (BuildContext context) => AlertDialog(
+          title: const Text('Hiba'),
+          content: Text(e.toString()),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('OK'),
+            ),
+          ],
+        ),
+      );
+    }
+  }
+
+  Future<void> _downloadSample() async {
+    // Create an anchor element with a download attribute to trigger the download
+    final anchor = AnchorElement(href: 'assets/csoportos-beszedes-minta.xlsx')
+      ..setAttribute("download", "csoportos-beszedes-minta.xlsx")
       ..click();
 
     // Clean up the URL created for the blob
@@ -158,6 +240,14 @@ class _HomePageState extends State<HomePage> {
           style: Theme.of(context).textTheme.headlineLarge,
         ),
         centerTitle: true,
+      ),
+      bottomNavigationBar: BottomAppBar(
+        elevation: 0.0,
+        padding: EdgeInsets.zero,
+        height: 24.0,
+        child: Center(
+          child: Text('v${widget.packageInfo.version}'),
+        ),
       ),
       body: LayoutBuilder(
         builder: (context, constraints) {
@@ -192,9 +282,15 @@ class _HomePageState extends State<HomePage> {
                         label: 'Bankszámlaszám',
                       ),
                       MyTextField(
+                        controller: _titleController,
+                        keyboardType: TextInputType.text,
+                        hintText: 'EGY',
+                        label: 'Jogcím',
+                      ),
+                      MyTextField(
                         controller: _associationController,
                         keyboardType: TextInputType.text,
-                        hintText: 'EGYPSZHVSZ',
+                        hintText: 'PSZHVSZ',
                         label: 'Szervezet neve',
                       ),
                       MyTextField(
@@ -261,9 +357,13 @@ class _HomePageState extends State<HomePage> {
                           ),
                         ],
                       ),
+                      TextButton(
+                        onPressed: _downloadSample,
+                        child: const Text('Minta .xlsx fájl letöltése'),
+                      ),
                       MyButton(
                         onPressed: _openFilePicker,
-                        title: 'CSV kiválasztása',
+                        title: 'Excel fájl kiválasztása',
                       ),
                       ValueListenableBuilder<bool>(
                         valueListenable: _isProcessAllowed,

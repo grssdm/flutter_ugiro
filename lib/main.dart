@@ -1,8 +1,15 @@
 import 'package:flutter/material.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 import 'home_page.dart';
 
-void main() {
+PackageInfo? packageInfo;
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  packageInfo = await PackageInfo.fromPlatform();
+
   runApp(const UgiroApp());
 }
 
@@ -20,7 +27,7 @@ class UgiroApp extends StatelessWidget {
         ),
         useMaterial3: true,
       ),
-      home: const HomePage(),
+      home: HomePage(packageInfo!),
       debugShowCheckedModeBanner: false,
     );
   }
